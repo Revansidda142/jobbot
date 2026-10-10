@@ -1,0 +1,47 @@
+# Profile 'default'. Deep-merged over config.yaml (see README: Profiles).
+# Allowed keys: search, filters, scoring, answers, resume, limits.
+search:
+  keywords:
+  - sales coordinator
+  - sales executive
+  - inside sales
+  - business development executive
+  location: Bengaluru
+  max_age_hours: 24
+  pages: 2
+filters:
+  title_include_any:
+  - sales
+  - business development
+  - presales
+  - pre-sales
+  - account
+  - coordinator
+  - customer success
+  - relationship
+  title_exclude:
+  - intern
+  - trainee
+  - director
+  - vp
+  - vice president
+  - head
+  - senior manager
+  - general manager
+  company_blacklist: []
+scoring:
+  min_score: 70
+  notes: ''
+answers: []
+resume:
+  output_name: Shradha_Biradar_Resume.pdf
+  on_tailor_failure: use_master
+  protected_strings:
+  - Shradha Biradar
+  - shradhabiradar258@gmail.com
+  - "+91 9380704215"
+  - BESCOM
+  - East West Institute of Technology
+  - Shaheen PU College
+  - Shivaji High School
+  - TAP Academy

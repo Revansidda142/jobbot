@@ -1,9 +1,16 @@
 """Test helpers: a fake `cursor-agent`, a compile command, and a temp project root."""
+import os
 import shutil
 import stat
 import sys
 import tempfile
+import unittest
 from pathlib import Path
+from unittest import mock
+
+import yaml
+
+from common import deep_merge
 
 CODE_DIR = Path(__file__).resolve().parent.parent
 
@@ -55,21 +62,66 @@ def make_agent(tmp):
     return str(script), str(Path(tmp) / "fake")
 
 
-def make_root():
-    """Temp project root holding a copy of the resume files; nothing real is ever written to."""
-    root = Path(tempfile.mkdtemp(prefix="jobbot_test_"))
-    (root / "resume").mkdir()
-    for f in ("resume.tex", "resume.cls"):
-        shutil.copy(CODE_DIR / "resume" / f, root / "resume" / f)
-    return root
-
-
 def make_cfg(agent, **llm):
+    """Minimal in-memory config for llm_client tests."""
     return {
         "llm": {"provider": "cursor", "cmd": agent, "model": None, "timeout_seconds": 60, **llm},
         "search": {"keywords": ["sales coordinator"]},
         "scoring": {"min_score": 70, "max_description_chars": 6000, "notes": ""},
-        "resume": {"master_dir": "resume", "tex_file": "resume.tex", "compile_cmd": compile_cmd(),
-                   "output_name": "Test_Resume.pdf", "protected_strings": ["Shradha Biradar"],
-                   "on_tailor_failure": "use_master"},
     }
+
+
+PROFILE_DEFAULTS = {
+    "search": {"keywords": ["sales coordinator"], "location": "Bengaluru", "max_age_hours": 24, "pages": 1},
+    "filters": {"title_include_any": [], "title_exclude": [], "company_blacklist": []},
+    "scoring": {"min_score": 70, "notes": ""},
+    "answers": [],
+    "resume": {"output_name": "Test_Resume.pdf", "on_tailor_failure": "use_master",
+               "protected_strings": ["Shradha Biradar"]},
+}
+
+
+class HomeTestCase(unittest.TestCase):
+    """Runs every test under a temp JOBBOT_HOME with the fake cursor-agent. Real data/, output/ are never touched."""
+
+    profiles = ("default",)
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="jobbot_test_"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.home = self.tmp / "home"
+        (self.home / "resume").mkdir(parents=True)
+        agent, self.log = make_agent(self.tmp)
+        cfg = {"platforms": ["linkedin", "naukri"], "mode": "dry-run", "active_hours": [0, 24],
+               "scoring": {"min_score": 70, "max_description_chars": 6000},
+               "limits": {"max_applications_per_run": 15, "max_applications_per_day": 40, "delay_seconds": [0, 0]},
+               "resume": {"tex_file": "resume.tex", "compile_cmd": compile_cmd()},
+               "llm": {"provider": "cursor", "cmd": agent, "model": None, "timeout_seconds": 60}}
+        (self.home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        for name in self.profiles:
+            self.add_profile(name)
+        env = mock.patch.dict(os.environ, {"JOBBOT_HOME": str(self.home), "FAKE_LOG": self.log, "FAKE_MODE": "ok"})
+        env.start()
+        self.addCleanup(env.stop)
+        quiet = mock.patch("main.setup_logging")  # no log files / handlers during tests
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
+    def add_profile(self, name, with_tex=True, **override):
+        pdir = self.home / "resume" / name
+        pdir.mkdir(parents=True)
+        if with_tex:
+            shutil.copy(CODE_DIR / "resume" / "default" / "resume.tex", pdir / "resume.tex")
+        shutil.copy(CODE_DIR / "resume" / "default" / "resume.cls", pdir / "resume.cls")
+        (pdir / "profile.yaml").write_text(yaml.safe_dump(deep_merge(PROFILE_DEFAULTS, override)), encoding="utf-8")
+        return pdir
+
+    def mode(self, m):
+        return mock.patch.dict(os.environ, {"FAKE_MODE": m})
+
+    def llm_called(self):
+        return Path(self.log + ".args").exists()
+
+    def forget_llm_call(self):
+        for ext in (".args", ".stdin", ".cwd", ".cwdfiles"):
+            Path(self.log + ext).unlink(missing_ok=True)

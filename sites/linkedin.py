@@ -49,7 +49,7 @@ class LinkedIn(Adapter):
         for kw in s["keywords"]:
             for p in range(s.get("pages", 2)):
                 url = (f"https://www.linkedin.com/jobs/search/?keywords={quote_plus(kw)}"
-                       f"&location={quote_plus(s['location'])}&f_TPR=r{int(s['max_age_hours']) * 3600}"
+                       f"&location={quote_plus(s['location'])}{'&geoId=' + str(s['geo_id']) if s.get('geo_id') else ''}&f_TPR=r{int(s['max_age_hours']) * 3600}"
                        f"&sortBy=DD&start={p * 25}")
                 if cfg.get("linkedin", {}).get("easy_apply_only", True):
                     url += "&f_AL=true"

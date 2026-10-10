@@ -1,13 +1,6 @@
-# ---------------- What to search ----------------
-search:
-  keywords:                 # one search per keyword on each platform
-    - sales coordinator
-    - sales executive
-    - inside sales
-    - business development executive
-  location: Bengaluru
-  max_age_hours: 24         # only jobs posted within this window
-  pages: 2                  # result pages per keyword
+# Shared settings. Everything profile-specific (search, filters, scoring min_score/notes, answers,
+# resume output_name / protected_strings / on_tailor_failure, optional limits) lives in
+# resume/<profile>/profile.yaml and is deep-merged over this file.
 
 platforms: [linkedin, naukri]
 linkedin:
@@ -20,58 +13,25 @@ mode: dry-run
 
 active_hours: [8, 22]       # bot does nothing outside these hours (24h clock), unless run with --force
 
-# ---------------- Hard filters (checked before spending any LLM time) ----------------
-filters:
-  title_include_any: [sales, business development, presales, pre-sales, account, coordinator, customer success, relationship]
-  title_exclude: [intern, trainee, director, vp, "vice president", head, "senior manager", "general manager"]
-  company_blacklist: []
-
-# ---------------- Scoring (the LLM rates fit 0-100) ----------------
+# ---------------- Scoring defaults (profiles override min_score) ----------------
 scoring:
   min_score: 70
   max_description_chars: 6000
-  notes: ""                 # e.g. "Prefer junior roles in Bengaluru; no field-sales roles"
 
-# ---------------- Limits (be gentle with the sites) ----------------
+# ---------------- Limits (be gentle with the sites; profiles may override) ----------------
 limits:
   max_applications_per_run: 15
   max_applications_per_day: 40
   delay_seconds: [5, 11]    # random pause between jobs
 
-# ---------------- Resume ----------------
+# ---------------- Resume toolchain ----------------
 resume:
-  master_dir: resume
   tex_file: resume.tex
   compile_cmd: [tectonic, resume.tex]
-  output_name: Shradha_Biradar_Resume.pdf   # file name recruiters see on LinkedIn
-  on_tailor_failure: use_master             # use_master | skip
-  # Tailored output is rejected unless all of these strings are still present, unchanged:
-  protected_strings:
-    - Shradha Biradar
-    - shradhabiradar258@gmail.com
-    - "+91 9380704215"
-    - BESCOM
-    - East West Institute of Technology
-    - Shaheen PU College
-    - Shivaji High School
-    - TAP Academy
 
 # ---------------- LLM backend (scoring + resume tailoring) ----------------
 llm:
   provider: cursor          # cursor | claude
   cmd: cursor-agent         # for provider claude: claude
-  model: null               # optional; names come from `cursor-agent models`; null = Cursor default
+  model: claude-sonnet-5-5-medium
   timeout_seconds: 300
-
-# ---------------- Answers for LinkedIn screening questions ----------------
-# The bot only fills a question when 'match' (a regex on the question text) matches AND 'value' is set.
-# Anything it has no answer for makes it skip that job and log it. Fill in YOUR real values.
-answers: []
-#  - match: "years of experience"
-#    value: ""
-#  - match: "notice period"
-#    value: ""
-#  - match: "current ctc|current salary"
-#    value: ""
-#  - match: "expected ctc|expected salary"
-#    value: ""

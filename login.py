@@ -1,10 +1,10 @@
 """One-time (and whenever a session expires): log in by hand in the bot's own browser profile."""
 from playwright.sync_api import sync_playwright
 
-from common import ROOT
+from common import root
 
 with sync_playwright() as p:
-    ctx = p.chromium.launch_persistent_context(str(ROOT / "browser_profile"), headless=False,
+    ctx = p.chromium.launch_persistent_context(str(root() / "browser_profile"), headless=False,
                                                viewport={"width": 1366, "height": 900})
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     page.goto("https://www.linkedin.com/login")
