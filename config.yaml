@@ -20,13 +20,13 @@ mode: dry-run
 
 active_hours: [8, 22]       # bot does nothing outside these hours (24h clock), unless run with --force
 
-# ---------------- Hard filters (checked before spending any Claude time) ----------------
+# ---------------- Hard filters (checked before spending any LLM time) ----------------
 filters:
   title_include_any: [sales, business development, presales, pre-sales, account, coordinator, customer success, relationship]
   title_exclude: [intern, trainee, director, vp, "vice president", head, "senior manager", "general manager"]
   company_blacklist: []
 
-# ---------------- Scoring (Claude rates fit 0-100) ----------------
+# ---------------- Scoring (the LLM rates fit 0-100) ----------------
 scoring:
   min_score: 70
   max_description_chars: 6000
@@ -56,9 +56,12 @@ resume:
     - Shivaji High School
     - TAP Academy
 
-claude:
-  cmd: claude
-  model: null               # e.g. sonnet, to pick a specific model
+# ---------------- LLM backend (scoring + resume tailoring) ----------------
+llm:
+  provider: cursor          # cursor | claude
+  cmd: cursor-agent         # for provider claude: claude
+  model: null               # optional; names come from `cursor-agent models`; null = Cursor default
+  timeout_seconds: 300
 
 # ---------------- Answers for LinkedIn screening questions ----------------
 # The bot only fills a question when 'match' (a regex on the question text) matches AND 'value' is set.

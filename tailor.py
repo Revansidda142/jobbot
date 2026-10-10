@@ -1,4 +1,4 @@
-"""Per-job resume tailoring: Claude rewrites the master .tex, we validate it, tectonic compiles it."""
+"""Per-job resume tailoring: the LLM rewrites the master .tex, we validate it, tectonic compiles it."""
 import re
 import shutil
 import subprocess
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from claude_client import job_block, run_claude
+from llm_client import extract_tex, job_block, run_llm
 from common import ROOT, log, slugify
 
 TAILOR_INSTRUCTION = """You tailor a LaTeX resume to one specific job. The master resume source and the job posting \
@@ -128,17 +128,15 @@ def tailor_resume(cfg, job):
         stdin = f"<master_resume>\n{master}\n</master_resume>\n\n{job_block(job, max_chars)}"
         instruction = TAILOR_INSTRUCTION + (f"\n\nYour previous attempt was rejected: {feedback}\nFix this." if feedback else "")
         try:
-            out = run_claude(cfg, instruction, stdin, timeout=300)
+            out = run_llm(cfg, instruction, stdin)
         except Exception as e:  # noqa: BLE001
-            feedback = f"claude call failed: {e}"
+            feedback = f"LLM call failed: {e}"
             log.warning("tailor attempt %d: %s", attempt, feedback)
             continue
-        m = re.search(r"<tex>\s*(.*?)\s*</tex>", out, re.S)
-        if not m:
+        new = extract_tex(out)
+        if new is None:
             feedback = "no <tex>...</tex> block found in your reply"
             continue
-        new = m.group(1)
-        new = re.sub(r"^```(?:latex|tex)?\s*|\s*```$", "", new.strip())
         errs = validate(master, new, protected)
         if not errs:
             (workdir / "resume.tex").write_text(new, encoding="utf-8")

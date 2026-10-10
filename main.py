@@ -4,7 +4,7 @@ import sys
 from datetime import datetime
 
 from common import ROOT, BlockedError, Job, human_pause, load_config, log, parse_age_minutes, setup_logging
-from claude_client import score_job
+from llm_client import LLMError, build_command, llm_settings, parse_score, run_llm, score_job
 from db import DB
 from tailor import master_pdf, tailor_resume
 
@@ -50,16 +50,47 @@ def tailor_test(cfg, jd_file):
     print("Tailored PDF:", pdf if pdf else "FAILED - see the newest folder in output/ (FAILED.txt)")
 
 
+def llm_check(cfg):
+    """python main.py --llm-check -> tiny real call to the configured LLM; no browser, no site access."""
+    s = llm_settings(cfg)
+    print("Provider:", s["provider"])
+    print("Command :", " ".join(build_command(cfg)), "(prompt sent on stdin)" if s["provider"] == "cursor" else "")
+    ok = True
+    tests = [("Reply with exactly: OK", "", lambda r: "OK" in r),
+             ('Reply with ONLY this JSON, no prose: {"score": 42, "reason": "check"}', "",
+              lambda r: parse_score(r)[0] == 42)]
+    for prompt, payload, check in tests:
+        print("\nPrompt  :", prompt)
+        try:
+            reply = run_llm(cfg, prompt, payload)
+        except LLMError as e:
+            print("ERROR   :", e)
+            ok = False
+            continue
+        try:
+            parsed = bool(check(reply))
+        except Exception:  # noqa: BLE001
+            parsed = False
+        print("Reply   :", reply)
+        print("Parsed  :", "yes" if parsed else "NO")
+        ok = ok and parsed
+    print("\nLLM check:", "PASSED" if ok else "FAILED")
+    return 0 if ok else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["dry-run", "live"], help="override config mode")
     ap.add_argument("--force", action="store_true", help="ignore active_hours")
     ap.add_argument("--headless", action="store_true", help="hide the browser (not recommended)")
     ap.add_argument("--tailor-test", metavar="JD_FILE", help="test scoring+tailoring on a text file, no browser")
+    ap.add_argument("--llm-check", action="store_true", help="test the configured LLM backend, no browser")
     args = ap.parse_args()
 
     setup_logging()
     cfg = load_config()
+    if args.llm_check:
+        return llm_check(cfg)
     if args.tailor_test:
         return tailor_test(cfg, args.tailor_test)
 
