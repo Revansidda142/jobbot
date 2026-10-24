@@ -7,15 +7,15 @@ search:
     - kubernetes engineer
     - mlops engineer
   location: "Bengaluru, Karnataka, India"
-  # geo_id: ""             # if LinkedIn still shows the wrong place: set it to the geoId from the URL (see README)
-  max_age_hours: 24
+  geo_id: 105214831         # Bengaluru (taken from the LinkedIn URL)
+  max_age_hours: 72
   pages: 2
 filters:
   title_include_any: [sre, site reliability, devops, platform, infrastructure, cloud, reliability, kubernetes, mlops, "ml ops"]
   title_exclude: [intern, trainee, director, vp, "vice president", head, "general manager", "senior manager", "engineering manager", principal, architect]
   company_blacklist: []
 scoring:
-  min_score: 70
+  min_score: 50
   notes: "About 3 years of experience (Senior DevOps Engineer title). Strongest in Kubernetes, GitOps, observability and AI/ML platform infra; cloud experience is GCP only. Prefer SRE/DevOps/Platform roles for ~2-6 years of experience. Avoid L1/L2 support, pure Windows/sysadmin, manual testing and sales roles."
 answers:                    # LinkedIn screening answers: filled only when `match` (regex) matches the question text
   - {match: "notice period", value: "60"}                  # days
