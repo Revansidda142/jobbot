@@ -5,6 +5,12 @@
 platforms: [linkedin, naukri]
 linkedin:
   easy_apply_only: true     # external-apply jobs are skipped
+naukri:
+  # When a recruiter questionnaire pops up (live mode, interactive terminal) the bot prompts you: answer it in the
+  # browser, press Enter here (or `s` + Enter to skip) and it moves on. This is the longest it waits for you.
+  # Unattended runs (cron/run.sh) cannot prompt, so they just poll that long for the page to show "Applied".
+  # 0 = never wait. Jobs left as `needs_answers` are re-checked by the end-of-run verify pass.
+  questionnaire_wait_seconds: 120
 
 # ---------------- Mode ----------------
 # dry-run: search, filter, score, tailor, walk the LinkedIn form up to the last step, then discard. Nothing is submitted.
@@ -22,6 +28,7 @@ scoring:
 limits:
   max_applications_per_run: 15
   max_applications_per_day: 40
+  # max_jobs_per_run: 30       # optional: stop after looking at (scoring) this many jobs, newest first
   delay_seconds: [5, 11]    # random pause between jobs
 
 # ---------------- Resume toolchain ----------------
@@ -34,4 +41,5 @@ llm:
   provider: cursor          # cursor | claude
   cmd: cursor-agent         # for provider claude: claude
   model: claude-sonnet-5-5-medium
+  # score_model: composer-2.5   # optional: another model for scoring only (tailoring keeps `model`). Names: `cursor-agent models`
   timeout_seconds: 300

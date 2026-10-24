@@ -8,3 +8,6 @@ logs/
 *.log
 *.out
 resume/**/*.pdf
+browser_profile*/
+jobbot.zip
+resume/

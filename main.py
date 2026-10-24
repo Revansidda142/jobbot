@@ -13,9 +13,28 @@ from llm_client import LLMError, build_command, llm_settings, parse_score, run_l
 from tailor import job_folder, master_pdf, tailor_resume
 
 
+# "4-to-7-years" in Naukri URLs, "(3-6 years)" / "3 to 6 yrs" in titles
+_YEARS_RANGE = re.compile(r"(?<!\d)(\d{1,2})\s*(?:-to-|-|to)\s*(\d{1,2})\s*[- ]?(?:years?|yrs?|yoe)\b", re.I)
+_YEARS_PLUS = re.compile(r"(?<!\d)(\d{1,2})\s*\+\s*[- ]?(?:years?|yrs?|yoe)\b", re.I)
+
+
+def min_years_required(job):
+    """Lowest experience (years) the posting asks for, read from the URL/title for free; None if not stated."""
+    for text in (job.url or "", job.title or ""):
+        m = _YEARS_RANGE.search(text) or _YEARS_PLUS.search(text)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def passes_filters(job, cfg):
     f = cfg["filters"]
     t = job.title.lower()
+    cap = f.get("max_experience_years")
+    if cap is not None:
+        need = min_years_required(job)
+        if need is not None and need > cap:
+            return False, f"asks for {need}+ years of experience (max_experience_years is {cap})"
     if f.get("title_include_any") and not any(k.lower() in t for k in f["title_include_any"]):
         return False, "title does not contain any include-keyword"
     if any(k.lower() in t for k in f.get("title_exclude", [])):
@@ -198,6 +217,71 @@ def browser_session(headless):
             ctx.close()
 
 
+def verify_pass(db, page, adapters, items):
+    """Re-open each uncertain job (dicts shaped like DB.uncertain rows) and promote the ones that did go through.
+    Returns {"applied": n, "not_applied": n, "unknown": n}. Never clicks anything."""
+    counts = {"applied": 0, "not_applied": 0, "unknown": 0}
+    for it in items:
+        ad = adapters.get(it["platform"])
+        result = "unknown"
+        if ad is not None:
+            job = Job(it["platform"], it["job_id"], it["title"], it["company"], "", it["url"],
+                      it.get("posted_text") or "", it.get("age_minutes") or 0)
+            try:
+                result = ad.verify(page, job)
+            except BlockedError as e:
+                log.warning("%s blocked during verification: %s", it["platform"], e)
+                adapters.pop(it["platform"], None)
+            except Exception as e:  # noqa: BLE001
+                log.warning("verify failed for %s: %s", it["url"], e)
+        counts[result if result in counts else "unknown"] += 1
+        log.info("verify [%s] %s @ %s: %s -> %s", it["platform"], it["title"], it["company"], it["status"], result)
+        if result == "applied" and db.promote_applied(it["platform"], it["job_id"], it["profile"],
+                                                      "verified on re-check: page shows Applied"):
+            when = datetime.fromisoformat(it["updated"]) if it.get("updated") else None
+            append_application_csv(root() / "data" / "applications.csv", job, it["profile"], "applied", it["score"],
+                                   it.get("tailored"), it.get("resume_pdf"), it.get("job_folder"), when=when)
+            if it.get("row") is not None:
+                it["row"].update(status="applied", detail=it["row"].get("detail", "") + " (verified on re-check)")
+        human_pause_short()
+    return counts
+
+
+def human_pause_short():
+    """Small pause between page loads of the verification pass (tests patch this)."""
+    import random
+    import time
+    time.sleep(random.uniform(1, 3))
+
+
+def verify_cmd(cfg, args):
+    """python main.py --verify: re-check every unconfirmed/needs_answers row of the profile in jobs.db."""
+    dbfile = root() / "data" / "jobs.db"
+    if not dbfile.exists():
+        print("Nothing to verify (no jobs.db yet).")
+        return 0
+    db = DB(dbfile)
+    items = db.uncertain(profile=cfg["profile"])
+    if not items:
+        print(f"Nothing to verify for profile {cfg['profile']}.")
+        return 0
+    with browser_session(args.headless) as page:
+        adapters = {}
+        for name, ad in get_adapters(cfg).items():
+            if any(i["platform"] == name for i in items):
+                try:
+                    if ad.ensure_logged_in(page):
+                        adapters[name] = ad
+                    else:
+                        print(f"{name}: not logged in - run `python login.py`; skipping.")
+                except Exception as e:  # noqa: BLE001
+                    print(f"{name}: login check failed: {e}")
+        counts = verify_pass(db, page, adapters, items)
+    print(f"Verified {len(items)} jobs: {counts['applied']} now 'applied', {counts['not_applied']} still need "
+          f"you (Apply button shown), {counts['unknown']} could not be told.")
+    return 0
+
+
 def run_bot(cfg, args, mode):
     profile = cfg["profile"]
     started = datetime.now()
@@ -245,13 +329,18 @@ def run_bot(cfg, args, mode):
 
         # 4) score -> tailor -> apply
         lim = cfg["limits"]
-        done_run, blocked = 0, set()
+        done_run, looked_at, blocked = 0, 0, set()
+        uncertain = []
         for job in fresh:
             if done_run >= lim["max_applications_per_run"] or db.applied_today() >= lim["max_applications_per_day"]:
                 log.info("Limit reached; stopping.")
                 break
+            if lim.get("max_jobs_per_run") and looked_at >= lim["max_jobs_per_run"]:
+                log.info("max_jobs_per_run (%d) reached; stopping. Remaining jobs are picked up next run.", looked_at)
+                break
             if job.platform in blocked or job.platform not in adapters:
                 continue
+            looked_at += 1
             ad = adapters[job.platform]
             row = {"posted": job.posted_text, "platform": job.platform, "company": job.company,
                    "title": job.title, "score": "", "status": "", "detail": ""}
@@ -290,8 +379,14 @@ def run_bot(cfg, args, mode):
                     append_application_csv(root() / "data" / "applications_dryrun.csv", job, profile, status, score,
                                            tailored, pdf, folder)
                 row.update(status=status, detail=f"{detail} {('PDF: ' + pdf.name) if pdf else ''}".strip())
-                if status in ("applied", "dry_run_ok"):
+                if status in ("applied", "dry_run_ok", "unconfirmed"):   # unconfirmed = clicked, probably sent
                     done_run += 1
+                if status in DB.UNCERTAIN and mode == "live":
+                    uncertain.append({"platform": job.platform, "job_id": job.job_id, "profile": profile,
+                                      "title": job.title, "company": job.company, "url": job.url,
+                                      "posted_text": job.posted_text, "age_minutes": job.age_minutes,
+                                      "score": score, "status": status, "tailored": tailored,
+                                      "resume_pdf": pdf or "", "job_folder": folder, "updated": None, "row": row})
                 log.info("[%s] %s @ %s (%s) -> %s", job.platform, job.title, job.company, job.posted_text, status)
             except BlockedError as e:
                 log.warning("%s blocked mid-run: %s", job.platform, e)
@@ -308,6 +403,12 @@ def run_bot(cfg, args, mode):
                 row.update(status="error", detail=str(e)[:150])
             rows.append(row)
             human_pause(cfg)
+
+        # 5) re-check the uncertain ones (clicked but unconfirmed / questionnaire) by reopening their pages
+        if uncertain:
+            log.info("verifying %d uncertain application(s)...", len(uncertain))
+            counts = verify_pass(db, page, adapters, uncertain)
+            log.info("verification: %s", counts)          # promoted rows also update their report line
 
     report = write_report(rows, mode, started, profile)
     log.info("=== run done: %d processed, report: %s ===", len(rows), report)
@@ -328,11 +429,18 @@ def main(argv=None):
     ap.add_argument("--force", action="store_true", help="ignore active_hours")
     ap.add_argument("--headless", action="store_true", help="hide the browser (not recommended)")
     ap.add_argument("--tailor-test", metavar="JD_FILE", help="test scoring+tailoring on a text file, no browser")
+    ap.add_argument("--ui", action="store_true", help="start the read-only local web UI (http://127.0.0.1:8765)")
+    ap.add_argument("--port", type=int, default=8765, help="with --ui: port (default 8765)")
+    ap.add_argument("--verify", action="store_true",
+                    help="re-open this profile's unconfirmed/needs_answers jobs (jobs.db) and mark the ones that were applied")
     ap.add_argument("--llm-check", action="store_true", help="test the configured LLM backend, no browser")
     args = ap.parse_args(argv)
 
     setup_logging()
     try:
+        if args.ui:
+            import ui  # lazy: the UI is optional and read-only
+            return ui.serve(args.port)
         if args.list_profiles:
             return list_profiles_cmd()
         if args.new_profile:
@@ -350,6 +458,8 @@ def main(argv=None):
             cfg["platforms"] = [p.strip() for p in args.platforms.split(",") if p.strip()]
         if args.tailor_test:
             return tailor_test(cfg, args.tailor_test)
+        if args.verify:
+            return verify_cmd(cfg, args)
         if not cfg["search"].get("keywords"):
             raise ProfileError(f"profile {cfg['profile']!r} has no search.keywords in {profile_dir(cfg['profile'])}/profile.yaml")
         if not profile_master_tex(cfg).exists():

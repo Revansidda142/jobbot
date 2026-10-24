@@ -42,6 +42,7 @@ def llm_settings(cfg):
     else:
         s = {"provider": "cursor", "cmd": "cursor-agent"}
     s.setdefault("model", None)
+    s.setdefault("score_model", None)  # optional: a different model for scoring only
     s.setdefault("timeout_seconds", 300)
     return s
 
@@ -50,8 +51,9 @@ def strip_ansi(text):
     return ANSI_RE.sub("", text or "")
 
 
-def build_command(cfg, instruction=None):
-    """Command line for the configured provider. For 'cursor' the prompt goes on stdin (verified to work)."""
+def build_command(cfg, instruction=None, model=None):
+    """Command line for the configured provider. For 'cursor' the prompt goes on stdin (verified to work).
+    `model` overrides llm.model for this call (used for scoring: llm.score_model)."""
     s = llm_settings(cfg)
     if s["provider"] == "cursor":
         cmd = [s["cmd"], "-p", "--trust", "--mode", "ask", "--output-format", "text"]
@@ -59,16 +61,17 @@ def build_command(cfg, instruction=None):
         cmd = [s["cmd"], "-p"] + ([instruction] if instruction is not None else ["<instruction>"])
     else:
         raise LLMError(f"unknown llm.provider {s['provider']!r} (use cursor or claude)")
-    if s.get("model"):
-        cmd += ["--model", str(s["model"])]
+    model = model or s.get("model")
+    if model:
+        cmd += ["--model", str(model)]
     return cmd
 
 
-def run_llm(cfg, instruction, payload, timeout=None):
+def run_llm(cfg, instruction, payload, timeout=None, model=None):
     """Single entry point for every LLM call. Returns the model's plain-text reply."""
     s = llm_settings(cfg)
     timeout = timeout or s["timeout_seconds"]
-    cmd = build_command(cfg, instruction)
+    cmd = build_command(cfg, instruction, model)
     if s["provider"] == "cursor":
         stdin_text = f"{instruction}\n\n{payload}"
     else:
@@ -136,7 +139,7 @@ def score_job(cfg, resume_tex, job):
     stdin = (f"<resume>\n{resume_tex}\n</resume>\n\n{profile_block(cfg)}"
              f"{job_block(job, s.get('max_description_chars', 6000))}")
     try:
-        return parse_score(run_llm(cfg, instruction, stdin))
+        return parse_score(run_llm(cfg, instruction, stdin, model=llm_settings(cfg).get("score_model")))
     except Exception as e:  # noqa: BLE001
         log.warning("scoring failed for %s: %s", job.title, e)
         return 0, f"score failed: {e}"[:300]

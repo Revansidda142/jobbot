@@ -17,3 +17,8 @@ class Adapter:
         """Return (status, detail). status: applied | dry_run_ok | needs_answers | external |
         no_apply_button | already_applied | unconfirmed | error"""
         raise NotImplementedError
+
+    def verify(self, page, job) -> str:
+        """Re-open the job later and say whether the application went through.
+        Returns 'applied' | 'not_applied' | 'unknown'. Sites that cannot tell keep the default."""
+        return "unknown"

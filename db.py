@@ -75,9 +75,37 @@ class DB:
         self.conn.commit()
 
     def applied_today(self):
+        """Applications today for the daily limit. 'unconfirmed' counts: the click happened and may have gone through."""
         return self.conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE status='applied' AND date(updated)=date('now','localtime')"
+            "SELECT COUNT(*) FROM jobs WHERE status IN ('applied','unconfirmed') AND date(updated)=date('now','localtime')"
         ).fetchone()[0]
+
+    UNCERTAIN = ("unconfirmed", "needs_answers")
+
+    def uncertain(self, profile=None, platform=None):
+        """Rows whose outcome is not certain (clicked but unconfirmed, or a questionnaire popped up)."""
+        sql = ("SELECT platform, job_id, profile, title, company, url, posted_text, age_minutes, score, status, "
+               "tailored, resume_pdf, job_folder, updated FROM jobs WHERE status IN (?,?)")
+        args = list(self.UNCERTAIN)
+        if profile:
+            sql += " AND profile=?"
+            args.append(profile)
+        if platform:
+            sql += " AND platform=?"
+            args.append(platform)
+        cur = self.conn.execute(sql + " ORDER BY updated", args)
+        names = [c[0] for c in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+
+    def promote_applied(self, platform, job_id, profile, note):
+        """unconfirmed/needs_answers -> applied after a successful re-check. `updated` is left alone so an old
+        application does not count as today's. Returns True if a row was changed."""
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE jobs SET status='applied', reason=COALESCE(reason,'') || ? "
+                "WHERE platform=? AND job_id=? AND profile=? AND status IN (?,?)",
+                (f" | {note}", platform, job_id, profile, *self.UNCERTAIN))
+        return cur.rowcount > 0
 
     def history(self, profile=None, days=None):
         """Rows (newest first) for the --history table."""
@@ -93,7 +121,7 @@ class DB:
         return self.conn.execute(sql + " ORDER BY updated DESC", args).fetchall()
 
 
-def append_application_csv(path, job, profile, status, score, tailored, resume_pdf, job_folder):
+def append_application_csv(path, job, profile, status, score, tailored, resume_pdf, job_folder, when=None):
     """Append ONE row. Creates the file with a header if missing; never rewrites or truncates it.
     `notes` and `outcome` are left empty for you to fill in by hand."""
     path = Path(path)
@@ -103,6 +131,6 @@ def append_application_csv(path, job, profile, status, score, tailored, resume_p
         w = csv.writer(f)
         if need_header:
             w.writerow(CSV_COLUMNS)
-        w.writerow([datetime.now().isoformat(sep=" ", timespec="seconds"), profile, job.platform, job.company,
+        w.writerow([(when or datetime.now()).isoformat(sep=" ", timespec="seconds"), profile, job.platform, job.company,
                     job.title, job.location, job.url, job.posted_text, score, status, int(bool(tailored)),
                     str(resume_pdf or ""), str(job_folder or ""), "", ""])

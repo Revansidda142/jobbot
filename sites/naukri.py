@@ -2,7 +2,11 @@
 tailored PDF cannot be attached (supports_resume_upload = False)."""
 import math
 import re
+import select
+import sys
+import time
 
+from playwright.sync_api import Error as PWError
 from playwright.sync_api import TimeoutError as PWTimeout
 
 from common import BlockedError, Job, log, parse_age_minutes, slugify
@@ -35,9 +39,72 @@ def _check_blocked(page):
         raise BlockedError(f"Naukri shows a login/captcha page: {page.url}")
 
 
+def _goto(page, url):
+    """page.goto that survives Naukri's delayed apply redirect ('interrupted by another navigation')."""
+    for attempt in (1, 2):
+        try:
+            page.goto(url, wait_until="domcontentloaded")
+            return
+        except PWError as e:
+            if attempt == 2 or "interrupted by another navigation" not in str(e):
+                raise
+            page.wait_for_timeout(2500)
+
+
+def _applied(page):
+    """After applying, Naukri turns the button into an 'Applied' label (it shows no 'successfully applied' text)."""
+    try:
+        return page.get_by_text(re.compile(r"^Applied$|successfully applied|applied successfully", re.I)).count() > 0
+    except PWError:      # page is mid-navigation (the saveApply redirect): ask again shortly
+        return False
+
+
+def _questionnaire_open(page):
+    """A real recruiter questionnaire/chatbot, visible. (The page header always has 'Drawer' classes, so not those.)"""
+    try:
+        return page.locator("[class*='chatbot'], [class*='questionnaire']").first.is_visible()
+    except PWError:
+        return False
+
+
+def _interactive():
+    """True when a person can see and answer a prompt (not cron / run.sh, which redirect output to a log)."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _ask_user(job, timeout, poll, slice_s=2.0):
+    """Tell the user a questionnaire is open and wait for the first of: Enter/y ('done'), s/n ('skip'),
+    poll() turning true ('label': the page shows Applied by itself) or the timeout ('timeout')."""
+    print(f"\n>>> Questionnaire open for: {job.title} @ {job.company}\n"
+          f"    Answer it in the browser window, then press Enter here (or type s + Enter to skip). "
+          f"Waiting up to {int(timeout)}s...", flush=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        ready, _, _ = select.select([sys.stdin], [], [], slice_s)
+        if ready:
+            line = sys.stdin.readline().strip().lower()
+            return "skip" if line in ("s", "n", "skip", "no") else "done"
+        if poll():
+            return "label"
+        if time.monotonic() >= deadline:
+            return "timeout"
+
+
 class Naukri(Adapter):
     name = "naukri"
     supports_resume_upload = False
+
+    def verify(self, page, job):
+        """Reopen the job page: an 'Applied' label means it went through; a visible Apply button means it did not."""
+        _goto(page, job.url)
+        page.wait_for_timeout(3000)
+        _check_blocked(page)
+        if _applied(page):
+            return "applied"
+        btn = page.locator("#apply-button")
+        if btn.count() or page.get_by_role("button", name=re.compile(r"^Apply$", re.I)).count():
+            return "not_applied"
+        return "unknown"
 
     def ensure_logged_in(self, page):
         page.goto("https://www.naukri.com/mnjuser/homepage", wait_until="domcontentloaded")
@@ -72,7 +139,7 @@ class Naukri(Adapter):
         return list(found.values())
 
     def get_description(self, page, job):
-        page.goto(job.url, wait_until="domcontentloaded")
+        _goto(page, job.url)
         _check_blocked(page)
         page.wait_for_timeout(2500)
         try:
@@ -82,7 +149,7 @@ class Naukri(Adapter):
 
     def apply(self, page, job, pdf_path, cfg, submit):
         if job.url not in page.url:
-            page.goto(job.url, wait_until="domcontentloaded")
+            _goto(page, job.url)
         _check_blocked(page)
         if page.get_by_text(re.compile(r"^Applied$", re.I)).count():
             return "already_applied", "Naukri shows this job as already applied"
@@ -96,10 +163,29 @@ class Naukri(Adapter):
         if not submit:
             return "dry_run_ok", "Apply button found (not clicked in dry-run)"
         btn.first.click()
-        page.wait_for_timeout(3500)
-        _check_blocked(page)
-        if page.get_by_text(re.compile(r"successfully applied|applied successfully", re.I)).count():
-            return "applied", "submitted with profile resume"
-        if page.locator("[class*='chatbot'], [class*='Drawer'], [class*='questionnaire']").count():
+        for _ in range(4):                       # give Naukri up to ~8s to flip the button to 'Applied'
+            page.wait_for_timeout(2000)
+            _check_blocked(page)
+            if _applied(page):
+                return "applied", "submitted with profile resume"
+        if _questionnaire_open(page):
+            wait = int((cfg.get("naukri") or {}).get("questionnaire_wait_seconds", 120))
+            if wait > 0 and _interactive():
+                outcome = _ask_user(job, wait, lambda: _applied(page))
+                if outcome == "label":
+                    return "applied", "questionnaire answered by hand, submitted"
+                if outcome == "done":                      # you say you answered: give Naukri a moment to confirm
+                    for _ in range(4):
+                        page.wait_for_timeout(2000)
+                        _check_blocked(page)
+                        if _applied(page):
+                            return "applied", "questionnaire answered by hand, submitted"
+            elif wait > 0:                                 # unattended (cron): just poll for the label
+                log.info("Recruiter questionnaire open; polling up to %ds for it to be answered...", wait)
+                for _ in range(wait // 3):
+                    page.wait_for_timeout(3000)
+                    _check_blocked(page)
+                    if _applied(page):
+                        return "applied", "questionnaire answered by hand, submitted"
             return "needs_answers", "Recruiter questionnaire appeared; left for you to do by hand"
-        return "unconfirmed", "Clicked Apply; no confirmation text seen"
+        return "unconfirmed", "Clicked Apply; no 'Applied' label seen: check the job on Naukri"

@@ -28,6 +28,34 @@ async () => {
 """
 
 
+# Current LinkedIn layout: every job card is a div with componentkey="job-card-component-ref-<jobId>"
+# (each card appears twice in the DOM, nested; duplicates are merged by job id in collect()).
+NEW_CARD = '[componentkey^="job-card-component-ref-"]'
+NEW_CARD_JS = "els => els.map(e => ({key: e.getAttribute('componentkey'), text: e.innerText}))"
+
+
+def parse_card_text(text):
+    """Card text looks like: 'Title (Verified job)', 'Title', 'Company', 'Location', ..., 'Posted 51 minutes ago', ..."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip() and ln.strip() != "\u00b7"]
+    if not lines:
+        return {"title": "", "company": "", "location": "", "posted": ""}
+    title = re.sub(r"\s*\((Verified job|Promoted)\)\s*$", "", lines[0]).strip()
+    rest = lines[1:]
+    if rest and rest[0].strip() == title:
+        rest = rest[1:]
+    posted = next((ln for ln in lines if re.search(r"\b(ago|just now)\b", ln, re.I)), "")
+    return {"title": title, "company": rest[0] if rest else "", "location": rest[1] if len(rest) > 1 else "",
+            "posted": posted}
+
+
+def search_url(s, keyword, page_no, easy_apply=True):
+    """Search URL for the current layout. geoId (search.geo_id) pins the location; plain text is often ignored."""
+    url = (f"https://www.linkedin.com/jobs/search-results/?keywords={quote_plus(keyword)}"
+           + (f"&geoId={s['geo_id']}" if s.get("geo_id") else f"&location={quote_plus(s['location'])}")
+           + f"&f_TPR=r{int(s['max_age_hours']) * 3600}&sortBy=DD&start={page_no * 25}")
+    return url + ("&f_AL=true" if easy_apply else "")
+
+
 def _check_blocked(page):
     u = page.url
     if any(x in u for x in ("checkpoint", "authwall", "/login", "captcha", "uas/")):
@@ -48,20 +76,21 @@ class LinkedIn(Adapter):
         found = {}
         for kw in s["keywords"]:
             for p in range(s.get("pages", 2)):
-                url = (f"https://www.linkedin.com/jobs/search/?keywords={quote_plus(kw)}"
-                       f"&location={quote_plus(s['location'])}{'&geoId=' + str(s['geo_id']) if s.get('geo_id') else ''}&f_TPR=r{int(s['max_age_hours']) * 3600}"
-                       f"&sortBy=DD&start={p * 25}")
-                if cfg.get("linkedin", {}).get("easy_apply_only", True):
-                    url += "&f_AL=true"
+                url = search_url(s, kw, p, easy_apply=cfg.get("linkedin", {}).get("easy_apply_only", True))
                 page.goto(url, wait_until="domcontentloaded")
                 _check_blocked(page)
                 try:
-                    page.wait_for_selector("li[data-occludable-job-id]", timeout=15000)
+                    page.wait_for_selector(f"{NEW_CARD}, li[data-occludable-job-id]", timeout=15000)
                 except PWTimeout:
                     log.info("linkedin: no result cards for %r page %d", kw, p + 1)
                     break
                 page.evaluate(SCROLL_JS)
-                for row in page.eval_on_selector_all("li[data-occludable-job-id]", CARD_JS):
+                if page.locator(NEW_CARD).count():   # current layout (/jobs/search-results/)
+                    raw = page.eval_on_selector_all(NEW_CARD, NEW_CARD_JS)
+                    rows = [dict(parse_card_text(r["text"]), id=r["key"].rsplit("-", 1)[-1]) for r in raw]
+                else:                                # previous layout
+                    rows = page.eval_on_selector_all("li[data-occludable-job-id]", CARD_JS)
+                for row in rows:
                     if not row["id"] or not row["title"]:
                         continue
                     job = Job("linkedin", row["id"], row["title"].split("\n")[0].strip(),

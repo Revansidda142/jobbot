@@ -109,5 +109,22 @@ class LLMClientTest(unittest.TestCase):
             self.assertTrue(reason.startswith("score failed"))
 
 
+    # ---- optional separate model for scoring ----
+    def test_score_model_only_for_scoring(self):
+        cfg = make_cfg(self.agent, model="big-model", score_model="fast-model")
+        with self.mode("ok"):
+            score_job(cfg, "resume", self.job)
+            self.assertEqual(read(self.log, ".args").split()[-2:], ["--model", "fast-model"])
+            run_llm(cfg, "i", "p")
+            self.assertEqual(read(self.log, ".args").split()[-2:], ["--model", "big-model"])
+        self.assertEqual(build_command(cfg)[-2:], ["--model", "big-model"])
+
+    def test_score_model_unset_uses_default_model(self):
+        cfg = make_cfg(self.agent, model="big-model")
+        with self.mode("ok"):
+            score_job(cfg, "resume", self.job)
+        self.assertEqual(read(self.log, ".args").split()[-2:], ["--model", "big-model"])
+
+
 if __name__ == "__main__":
     unittest.main()
